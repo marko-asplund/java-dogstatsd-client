@@ -1,0 +1,1503 @@
+package com.datadog.dogstatsd;
+
+import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
+import org.junit.Test;
+import org.junit.Rule;
+import org.junit.contrib.java.lang.system.EnvironmentVariables;
+import org.junit.FixMethodOrder;
+import org.junit.runners.MethodSorters;
+
+import java.io.IOException;
+import java.net.SocketAddress;
+import java.util.List;
+import java.util.Locale;
+import java.util.Random;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.logging.Logger;
+import java.text.NumberFormat;
+
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.comparesEqualTo;
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.startsWith;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
+public class NonBlockingStatsDClientTest {
+
+    private static final int STATSD_SERVER_PORT = 17254;
+    private static NonBlockingStatsDClient client;
+    private static NonBlockingStatsDClient clientUnaggregated;
+    private static DummyStatsDServer server;
+
+    private static Logger log = Logger.getLogger("NonBlockingStatsDClientTest");
+
+    @Rule
+    public final EnvironmentVariables environmentVariables = new EnvironmentVariables();
+
+    @BeforeClass
+    public static void start() throws IOException {
+        server = new DummyStatsDServer(STATSD_SERVER_PORT);
+        client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableTelemetry(false)
+            .build();
+        clientUnaggregated = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableTelemetry(false)
+            .enableAggregation(false)
+            .build();
+    }
+
+    @AfterClass
+    public static void stop() {
+        try {
+            client.stop();
+            clientUnaggregated.stop();
+            server.close();
+        } catch (java.io.IOException ignored) {
+        }
+    }
+
+    @After
+    public void clear() {
+        server.clear();
+    }
+
+    @Test
+    public void assert_default_udp_size() throws Exception {
+        assertEquals(client.statsDProcessor.bufferPool.getBufferSize(), NonBlockingStatsDClient.DEFAULT_UDP_MAX_PACKET_SIZE_BYTES);
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_value_to_statsd() throws Exception {
+
+        client.count("mycount", 24);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mycount:24|c")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_value_with_sample_rate_to_statsd() throws Exception {
+
+        clientUnaggregated.count("mycount", 24, 1);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mycount:24|c|@1.000000")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_value_to_statsd_with_null_tags() throws Exception {
+
+        client.count("mycount", 24, (java.lang.String[]) null);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mycount:24|c")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_value_to_statsd_with_empty_tags() throws Exception {
+
+        client.count("mycount", 24);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mycount:24|c")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_value_to_statsd_with_tags() throws Exception {
+
+        client.count("mycount", 24, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mycount:24|c|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_value_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.count("mycount", 24, 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mycount:24|c|@1.000000|#baz,foo:bar")));
+    }
+
+
+    @Test(timeout = 5000L)
+    public void sends_counter_increment_to_statsd() throws Exception {
+
+        client.incrementCounter("myinc");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myinc:1|c")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_increment_to_statsd_with_tags() {
+
+        client.incrementCounter("myinc", "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myinc:1|c|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_increment_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.incrementCounter("myinc", 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myinc:1|c|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_decrement_to_statsd() throws Exception {
+
+        client.decrementCounter("mydec");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydec:-1|c")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_decrement_to_statsd_with_tags() throws Exception {
+
+        client.decrementCounter("mydec", "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydec:-1|c|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_counter_decrement_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.decrementCounter("mydec", 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydec:-1|c|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_to_statsd() throws Exception {
+
+
+        client.recordGaugeValue("mygauge", 423);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:423|g")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_with_sample_rate_to_statsd() throws Exception {
+
+        clientUnaggregated.recordGaugeValue("mygauge", 423, 1);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:423|g|@1.000000")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_large_double_gauge_to_statsd() throws Exception {
+
+
+        client.recordGaugeValue("mygauge", 123456789012345.67890);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:123456789012345.67|g")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_exact_double_gauge_to_statsd() throws Exception {
+
+
+        client.recordGaugeValue("mygauge", 123.45678901234567890);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:123.456789|g")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_gauge_to_statsd() throws Exception {
+
+
+        client.recordGaugeValue("mygauge", 0.423);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:0.423|g")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_to_statsd_with_tags() throws Exception {
+
+
+        client.recordGaugeValue("mygauge", 423, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:423|g|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.recordGaugeValue("mygauge", 423, 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:423|g|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_gauge_to_statsd_with_tags() throws Exception {
+
+
+        client.recordGaugeValue("mygauge", 0.423, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:0.423|g|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_histogram_to_statsd() throws Exception {
+
+        client.recordHistogramValue("myhistogram", 423);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myhistogram:423|h")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_histogram_to_statsd() throws Exception {
+
+
+        client.recordHistogramValue("myhistogram", 0.423);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myhistogram:0.423|h")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_histogram_to_statsd_with_tags() throws Exception {
+
+
+        client.recordHistogramValue("myhistogram", 423, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myhistogram:423|h|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_histogram_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.recordHistogramValue("myhistogram", 423, 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myhistogram:423|h|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_histogram_to_statsd_with_tags() throws Exception {
+
+
+        client.recordHistogramValue("myhistogram", 0.423, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myhistogram:0.423|h|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_histogram_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.recordHistogramValue("myhistogram", 0.423, 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myhistogram:0.423|h|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_distribtuion_to_statsd() throws Exception {
+
+        client.recordDistributionValue("mydistribution", 423);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydistribution:423|d")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_distribution_to_statsd() throws Exception {
+
+
+        client.recordDistributionValue("mydistribution", 0.423);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydistribution:0.423|d")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_distribution_to_statsd_with_tags() throws Exception {
+
+
+        client.recordDistributionValue("mydistribution", 423, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydistribution:423|d|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_distribution_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.recordDistributionValue("mydistribution", 423, 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydistribution:423|d|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_distribution_to_statsd_with_tags() throws Exception {
+
+
+        client.recordDistributionValue("mydistribution", 0.423, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydistribution:0.423|d|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_double_distribution_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.recordDistributionValue("mydistribution", 0.423, 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mydistribution:0.423|d|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_timer_to_statsd() throws Exception {
+
+
+        client.recordExecutionTime("mytime", 123);
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mytime:123|ms")));
+    }
+
+    /**
+     * A regression test for <a href="https://github.com/indeedeng/java-dogstatsd-client/issues/3">this i18n number formatting bug</a>
+     *
+     * @throws Exception
+     */
+    @Test
+    public void
+    sends_timer_to_statsd_from_locale_with_unamerican_number_formatting() throws Exception {
+
+        Locale originalDefaultLocale = Locale.getDefault();
+
+        // change the default Locale to one that uses something other than a '.' as the decimal separator (Germany uses a comma)
+        Locale.setDefault(Locale.GERMANY);
+
+        try {
+
+            client.recordExecutionTime("mytime", 123, "foo:bar", "baz");
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mytime:123|ms|#baz,foo:bar")));
+        } finally {
+            // reset the default Locale in case changing it has side-effects
+            Locale.setDefault(originalDefaultLocale);
+        }
+    }
+
+
+    @Test(timeout = 5000L)
+    public void sends_timer_to_statsd_with_tags() throws Exception {
+
+        client.recordExecutionTime("mytime", 123, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mytime:123|ms|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_timer_with_sample_rate_to_statsd_with_tags() throws Exception {
+
+        clientUnaggregated.recordExecutionTime("mytime", 123, 1, "foo:bar", "baz");
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mytime:123|ms|@1.000000|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_mixed_tags_deprecated() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags("instance:foo", "app:bar")
+            .build();
+        try {
+            client.gauge("value", 423, "baz");
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#app:bar,instance:foo,baz")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_mixed_tags() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags("instance:foo", "app:bar")
+            .build();
+        try {
+            client.gauge("value", 423, "baz");
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#app:bar,instance:foo,baz")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_mixed_tags_with_sample_rate_deprecated() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags("instance:foo", "app:bar")
+            .build();
+        try {
+            client.gauge("value", 423, 1, "baz");
+            server.waitForMessage("my.prefix.value:423");
+
+            List<String> messages = server.messagesReceived();
+            assertThat(messages, hasItem(comparesEqualTo("my.prefix.value:423|g|@1.000000|#app:bar,instance:foo,baz")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_mixed_tags_with_sample_rate() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags("instance:foo", "app:bar")
+            .enableAggregation(false)
+            .build();
+        try {
+            client.gauge("value", 423, 1, "baz");
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|@1.000000|#app:bar,instance:foo,baz")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_constant_tags_only_deprecated() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags("instance:foo", "app:bar")
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#app:bar,instance:foo")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_constant_tags_only() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags("instance:foo", "app:bar")
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#app:bar,instance:foo")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_entityID_from_env_deprecated() throws Exception {
+        final String entity_value =  "foo-entity";
+        environmentVariables.set(NonBlockingStatsDClient.DD_ENTITY_ID_ENV_VAR, entity_value);
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#dd.internal.entity_id:foo-entity")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_entityID_from_env() throws Exception {
+        final String entity_value =  "foo-entity";
+        environmentVariables.set(NonBlockingStatsDClient.DD_ENTITY_ID_ENV_VAR, entity_value);
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage();
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#dd.internal.entity_id:foo-entity")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_entityID_from_env_and_constant_tags_deprecated() throws Exception {
+        final String entity_value =  "foo-entity";
+        environmentVariables.set(NonBlockingStatsDClient.DD_ENTITY_ID_ENV_VAR, entity_value);
+        final String constantTags = "arbitraryTag:arbitraryValue";
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags(constantTags)
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#dd.internal.entity_id:foo-entity," + constantTags)));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_entityID_from_env_and_constant_tags() throws Exception {
+        final String entity_value =  "foo-entity";
+        environmentVariables.set(NonBlockingStatsDClient.DD_ENTITY_ID_ENV_VAR, entity_value);
+        final String constantTags = "arbitraryTag:arbitraryValue";
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .constantTags(constantTags)
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#dd.internal.entity_id:foo-entity," + constantTags)));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_entityID_from_args_deprecated() throws Exception {
+        final String entity_value =  "foo-entity";
+        environmentVariables.set(NonBlockingStatsDClient.DD_ENTITY_ID_ENV_VAR, entity_value);
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .constantTags(null)
+            .errorHandler(null)
+            .entityID(entity_value+"-arg")
+            .build();
+
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#dd.internal.entity_id:foo-entity-arg")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_entityID_from_args() throws Exception {
+        final String entity_value =  "foo-entity";
+        environmentVariables.set(NonBlockingStatsDClient.DD_ENTITY_ID_ENV_VAR, entity_value);
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .queueSize(Integer.MAX_VALUE)
+            .entityID(entity_value+"-arg")
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g|#dd.internal.entity_id:foo-entity-arg")));
+        } finally {
+            client.stop();
+        }
+    }
+
+
+    @Test(timeout = 5000L)
+    public void init_client_from_env_vars() throws Exception {
+        final String entity_value =  "foo-entity";
+        environmentVariables.set(NonBlockingStatsDClient.DD_DOGSTATSD_PORT_ENV_VAR, Integer.toString(STATSD_SERVER_PORT));
+        environmentVariables.set(NonBlockingStatsDClient.DD_AGENT_HOST_ENV_VAR, "localhost");
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .build();
+        try {
+            client.gauge("value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.value:423|g")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 15000L)
+    public void checkEnvVars() {
+        final Random r = new Random();
+        for (final NonBlockingStatsDClient.Literal literal : NonBlockingStatsDClient.Literal.values()) {
+            final String envVarName = literal.envName();
+            final String randomString = envVarName + "_val_" +r.nextDouble();
+            environmentVariables.set(envVarName, randomString);
+            final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+                    .prefix("checkEnvVars")
+                    .hostname("localhost")
+                    .port(STATSD_SERVER_PORT)
+                    .build();
+            server.clear();
+            client.gauge("value", 42);
+            server.waitForMessage("checkEnvVars.value");
+            log.info("passed for '" + literal + "'; env cleaned.");
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("checkEnvVars.value:42|g|#" +
+                    literal.tag() + ":" + randomString)));
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("checkEnvVars.value:42|g|#" +
+                    envVarName.replace("DD_", "").toLowerCase() + ":" + randomString)));
+            server.clear();
+
+            environmentVariables.clear(envVarName);
+            log.info("passed for '" + literal + "'; env cleaned.");
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_empty_prefix_deprecated() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .build();
+
+        try {
+            client.gauge("top.level.value", 423);
+            server.waitForMessage("top.level");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("top.level.value:423|g")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_empty_prefix() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .build();
+        try {
+            client.gauge("top.level.value", 423);
+            server.waitForMessage("top.level");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("top.level.value:423|g")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_null_prefix_deprecated() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix(null)
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .build();
+
+        try {
+            client.gauge("top.level.value", 423);
+            server.waitForMessage("top.level");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("top.level.value:423|g")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_null_prefix() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix(null)
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .build();
+        try {
+            client.gauge("top.level.value", 423);
+            server.waitForMessage("top.level");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("top.level.value:423|g")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_gauge_no_prefix() throws Exception {
+
+        final NonBlockingStatsDClient no_prefix_client = new NonBlockingStatsDClientBuilder()
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .build();
+        try {
+            no_prefix_client.gauge("top.level.value", 423);
+            server.waitForMessage("top.level");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("top.level.value:423|g")));
+        } finally {
+            no_prefix_client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_event() throws Exception {
+
+        final Event event = Event.builder()
+                .withTitle("title1")
+                .withText("text1\nline2")
+                .withDate(1234567000)
+                .withHostname("host1")
+                .withPriority(Event.Priority.LOW)
+                .withAggregationKey("key1")
+                .withAlertType(Event.AlertType.ERROR)
+                .withSourceTypeName("sourcetype1")
+                .build();
+        client.recordEvent(event);
+        server.waitForMessage();
+
+        assertThat(
+            server.messagesReceived(),
+            hasItem(comparesEqualTo("_e{16,12}:my.prefix.title1|text1\\nline2|d:1234567|h:host1|k:key1|p:low|t:error|s:sourcetype1"))
+        );
+    }
+
+    @Test(timeout = 5000L)
+    public void send_unicode_event() throws Exception {
+        final Event event = Event.builder()
+            .withTitle("Delivery - Daily Settlement Summary Report Delivery — Invoice Cloud succeeded")
+            .withText("Delivered — destination.csv").build();
+        assertEquals(event.getText(), "Delivered — destination.csv");
+        client.recordEvent(event);
+        server.waitForMessage();
+        assertThat(
+            server.messagesReceived(),
+            hasItem(comparesEqualTo("_e{89,29}:my.prefix.Delivery - Daily Settlement Summary Report Delivery — Invoice Cloud succeeded|Delivered — destination.csv"))
+        );
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_partial_event() throws Exception {
+
+        final Event event = Event.builder()
+                .withTitle("title1")
+                .withText("text1")
+                .withDate(1234567000)
+                .build();
+        client.recordEvent(event);
+        server.waitForMessage();
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("_e{16,5}:my.prefix.title1|text1|d:1234567")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_event_with_tags() throws Exception {
+
+        final Event event = Event.builder()
+                .withTitle("title1")
+                .withText("text1")
+                .withDate(1234567000)
+                .withHostname("host1")
+                .withPriority(Event.Priority.LOW)
+                .withAggregationKey("key1")
+                .withAlertType(Event.AlertType.ERROR)
+                .withSourceTypeName("sourcetype1")
+                .build();
+        client.recordEvent(event, "foo:bar", "baz");
+        server.waitForMessage();
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("_e{16,5}:my.prefix.title1|text1|d:1234567|h:host1|k:key1|p:low|t:error|s:sourcetype1|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_partial_event_with_tags() throws Exception {
+
+        final Event event = Event.builder()
+                .withTitle("title1")
+                .withText("text1")
+                .withDate(1234567000)
+                .build();
+        client.recordEvent(event, "foo:bar", "baz");
+        server.waitForMessage();
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("_e{16,5}:my.prefix.title1|text1|d:1234567|#baz,foo:bar")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_event_empty_prefix_deprecated() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .build();
+        final Event event = Event.builder()
+                .withTitle("title1")
+                .withText("text1")
+                .withDate(1234567000)
+                .withHostname("host1")
+                .withPriority(Event.Priority.LOW)
+                .withAggregationKey("key1")
+                .withAlertType(Event.AlertType.ERROR)
+                .withSourceTypeName("sourcetype1")
+                .build();
+        try {
+            client.recordEvent(event, "foo:bar", "baz");
+            server.waitForMessage("_e");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("_e{6,5}:title1|text1|d:1234567|h:host1|k:key1|p:low|t:error|s:sourcetype1|#baz,foo:bar")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_event_empty_prefix() throws Exception {
+
+        final NonBlockingStatsDClient client = new NonBlockingStatsDClientBuilder()
+            .prefix("")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .build();
+
+        final Event event = Event.builder()
+                .withTitle("title1")
+                .withText("text1")
+                .withDate(1234567000)
+                .withHostname("host1")
+                .withPriority(Event.Priority.LOW)
+                .withAggregationKey("key1")
+                .withAlertType(Event.AlertType.ERROR)
+                .withSourceTypeName("sourcetype1")
+                .build();
+        try {
+            client.recordEvent(event, "foo:bar", "baz");
+            server.waitForMessage("_e");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("_e{6,5}:title1|text1|d:1234567|h:host1|k:key1|p:low|t:error|s:sourcetype1|#baz,foo:bar")));
+        } finally {
+            client.stop();
+        }
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_no_body_event() throws Exception {
+        final Event event = Event.builder()
+                .withTitle("title")
+                .withDate(1234567000)
+                .build();
+        client.recordEvent(event);
+        server.waitForMessage();
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("_e{15,0}:my.prefix.title||d:1234567")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_service_check() throws Exception {
+        final String inputMessage = "\u266c \u2020\u00f8U \n\u2020\u00f8U \u00a5\u00bau|m: T0\u00b5 \u266a"; // "♬ †øU \n†øU ¥ºu|m: T0µ ♪"
+        final String outputMessage = "\u266c \u2020\u00f8U \\n\u2020\u00f8U \u00a5\u00bau|m\\: T0\u00b5 \u266a"; // note the escaped colon
+        final String[] tags = {"key1:val1", "key2:val2"};
+        final ServiceCheck sc = ServiceCheck.builder()
+                .withName("my_check.name")
+                .withStatus(ServiceCheck.Status.WARNING)
+                .withMessage(inputMessage)
+                .withHostname("i-abcd1234")
+                .withTags(tags)
+                .withTimestamp(1420740000)
+                .build();
+
+        assertEquals(outputMessage, sc.getEscapedMessage());
+
+        client.serviceCheck(sc);
+        server.waitForMessage("_sc");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo(String.format("_sc|my_check.name|1|d:1420740000|h:i-abcd1234|#key2:val2,key1:val1|m:%s",
+                outputMessage))));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_nan_gauge_to_statsd() throws Exception {
+        client.recordGaugeValue("mygauge", Double.NaN);
+
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.mygauge:NaN|g")));
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_set_to_statsd() throws Exception {
+        client.recordSetValue("myset", "myuserid");
+
+        server.waitForMessage("my.prefix");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myset:myuserid|s")));
+
+    }
+
+    @Test(timeout = 5000L)
+    public void sends_set_to_statsd_with_tags() throws Exception {
+        client.recordSetValue("myset", "myuserid", "foo:bar", "baz");
+
+        server.waitForMessage("my.prefix.myset");
+
+        assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.myset:myuserid|s|#baz,foo:bar")));
+
+    }
+
+    @Test(timeout=5000L)
+    public void sends_too_large_message_deprecated() throws Exception {
+
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+
+        try (final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .prefix("")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .errorHandler(errorHandler)
+            .build()) {
+
+            final byte[] messageBytes = new byte[1600];
+            final ServiceCheck tooLongServiceCheck = ServiceCheck.builder()
+                    .withName("toolong")
+                    .withMessage(new String(messageBytes))
+                    .withStatus(ServiceCheck.Status.OK)
+                    .build();
+            testClient.serviceCheck(tooLongServiceCheck);
+
+            final ServiceCheck withinLimitServiceCheck = ServiceCheck.builder()
+                    .withName("fine")
+                    .withStatus(ServiceCheck.Status.OK)
+                    .build();
+            testClient.serviceCheck(withinLimitServiceCheck);
+
+            server.waitForMessage("_sc");
+
+            final List<Exception> exceptions = errorHandler.getExceptions();
+            assertEquals(1, exceptions.size());
+            final Exception exception = exceptions.get(0);
+            assertEquals(InvalidMessageException.class, exception.getClass());
+            assertTrue(((InvalidMessageException)exception).getInvalidMessage().startsWith("_sc|toolong|"));
+
+            final List<String> messages = server.messagesReceived();
+            assertThat(messages, hasItem(comparesEqualTo("_sc|fine|0")));
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void sends_too_large_message() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+
+
+        try (final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+                .prefix("my.prefix")
+                .hostname("localhost")
+                .port(STATSD_SERVER_PORT)
+                .errorHandler(errorHandler)
+                .build()) {
+
+            final byte[] messageBytes = new byte[1600];
+            final ServiceCheck tooLongServiceCheck = ServiceCheck.builder()
+                    .withName("toolong")
+                    .withMessage(new String(messageBytes))
+                    .withStatus(ServiceCheck.Status.OK)
+                    .build();
+            testClient.serviceCheck(tooLongServiceCheck);
+
+            final ServiceCheck withinLimitServiceCheck = ServiceCheck.builder()
+                    .withName("fine")
+                    .withStatus(ServiceCheck.Status.OK)
+                    .build();
+            testClient.serviceCheck(withinLimitServiceCheck);
+
+            server.waitForMessage("_sc");
+
+            final List<Exception> exceptions = errorHandler.getExceptions();
+            assertEquals(1, exceptions.size());
+            final Exception exception = exceptions.get(0);
+            assertEquals(InvalidMessageException.class, exception.getClass());
+            assertTrue(((InvalidMessageException)exception).getInvalidMessage().startsWith("_sc|toolong|"));
+            // assertEquals(BufferOverflowException.class, exception.getClass());
+
+            final List<String> messages = server.messagesReceived();
+            assertThat(messages, hasItem(comparesEqualTo("_sc|fine|0")));
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void sends_telemetry_elsewhere() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+        final DummyStatsDServer telemetryServer = new DummyStatsDServer(STATSD_SERVER_PORT+10);
+        final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .telemetryHostname("localhost")
+            .telemetryPort(STATSD_SERVER_PORT+10)
+            .telemetryFlushInterval(3000)
+            .errorHandler(errorHandler)
+            .build();
+
+        try {
+            testClient.gauge("top.level.value", 423);
+            server.waitForMessage("my.prefix");
+
+            assertThat(server.messagesReceived(), hasItem(comparesEqualTo("my.prefix.top.level.value:423|g")));
+
+            telemetryServer.waitForMessage();
+
+            // 8 messages in telemetry batch
+            final List<String> messages = telemetryServer.messagesReceived();
+            assertEquals(17, messages.size());
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.metrics:1|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.events:0|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.service_checks:0|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.bytes_sent:32|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.bytes_dropped:0|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.packets_sent:1|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.packets_dropped:0|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.packets_dropped_queue:0|c")));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.aggregated_context:0|c")));
+        } finally {
+            testClient.stop();
+            telemetryServer.close();
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void testBasicGaugeAggregation() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+        final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableTelemetry(false)  // don't want additional packets
+            .enableAggregation(true)
+            .aggregationFlushInterval(3000)
+            .errorHandler(errorHandler)
+            .build();
+
+        try {
+            for (int i=0 ; i<10 ; i++) {
+                testClient.gauge("top.level.value", i);
+            }
+            server.waitForMessage("my.prefix");
+
+            List<String> messages = server.messagesReceived();
+
+            assertThat(messages.size(), comparesEqualTo(1));
+            assertThat(messages, hasItem(comparesEqualTo("my.prefix.top.level.value:9|g")));
+
+        } finally {
+            testClient.stop();
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void testBasicCountAggregation() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+        final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableTelemetry(false)  // don't want additional packets
+            .enableAggregation(true)
+            .aggregationFlushInterval(3000)
+            .errorHandler(errorHandler)
+            .build();
+
+        try {
+            for (int i=0 ; i<10 ; i++) {
+                testClient.count("top.level.count", i);
+            }
+            for (int i=0 ; i<10 ; i++) {
+                testClient.increment("top.level.count");
+            }
+
+            server.waitForMessage("my.prefix");
+
+            List<String> messages = server.messagesReceived();
+
+            assertThat(messages.size(), comparesEqualTo(1));
+            assertThat(messages, hasItem(comparesEqualTo("my.prefix.top.level.count:55|c")));
+
+        } finally {
+            testClient.stop();
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void testSampledCountAggregation() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+        final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableTelemetry(false)  // don't want additional packets
+            .enableAggregation(true)
+            .aggregationFlushInterval(3000)
+            .errorHandler(errorHandler)
+            .build();
+
+        try {
+            for (int i=0 ; i<10 ; i++) {
+                // NOTE: because aggregation is enabled, sampling is disabled, so all
+                // counts should be accounted for, as if sample rate were 1.0.
+                testClient.count("top.level.count", i, 0.1);
+            }
+            for (int i=0 ; i<10 ; i++) {
+                testClient.increment("top.level.count");
+            }
+
+            server.waitForMessage("my.prefix");
+
+            List<String> messages = server.messagesReceived();
+
+            assertThat(messages.size(), comparesEqualTo(1));
+            assertThat(messages, hasItem(comparesEqualTo("my.prefix.top.level.count:55|c")));
+
+        } finally {
+            testClient.stop();
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void testBasicSetAggregation() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+        final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableTelemetry(false)  // don't want additional packets
+            .enableAggregation(true)
+            .aggregationFlushInterval(3000)
+            .errorHandler(errorHandler)
+            .build();
+
+        try {
+            for (int i=0 ; i<10 ; i++) {
+                testClient.recordSetValue("top.level.set", "foo", null);
+                testClient.recordSetValue("top.level.set", "bar", null);
+            }
+
+            server.waitForMessage("my.prefix");
+
+            List<String> messages = server.messagesReceived();
+
+            assertThat(messages.size(), comparesEqualTo(2));
+            assertThat(messages, hasItem(comparesEqualTo("my.prefix.top.level.set:foo|s")));
+            assertThat(messages, hasItem(comparesEqualTo("my.prefix.top.level.set:bar|s")));
+
+        } finally {
+            testClient.stop();
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void testAggregationTelemetry() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+        final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableAggregation(true)
+            .aggregationFlushInterval(3000)
+            .telemetryFlushInterval(3000)
+            .errorHandler(errorHandler)
+            .build();
+
+        try {
+            for (int i=0 ; i<10 ; i++) {
+                testClient.gauge("top.level.value", i);
+            }
+            for (int i=0 ; i<10 ; i++) {
+                testClient.count("top.level.count", i);
+            }
+            for (int i=0 ; i<10 ; i++) {
+                testClient.increment("top.level.count.other");
+            }
+
+            server.waitForMessage("datadog");
+
+            List<String> messages = server.messagesReceived();
+
+            assertThat(messages.size(), comparesEqualTo(3+17));
+            assertThat(messages, hasItem(startsWith("datadog.dogstatsd.client.aggregated_context:27|c")));
+
+        } finally {
+            testClient.stop();
+        }
+    }
+
+    @Test(timeout=5000L)
+    public void testBasicUnaggregatedMetrics() throws Exception {
+        final RecordingErrorHandler errorHandler = new RecordingErrorHandler();
+        final NonBlockingStatsDClient testClient = new NonBlockingStatsDClientBuilder()
+            .prefix("my.prefix")
+            .hostname("localhost")
+            .port(STATSD_SERVER_PORT)
+            .enableTelemetry(false)  // don't want additional packets
+            .enableAggregation(true)
+            .aggregationFlushInterval(3000)
+            .errorHandler(errorHandler)
+            .build();
+
+        try {
+            int submitted = 0;
+            for (int i=0 ; i<10 ; i++) {
+                testClient.histogram("top.level.hist", i);
+                testClient.distribution("top.level.dist", i);
+                testClient.time("top.level.time", i);
+                submitted += 3;
+            }
+            server.waitForMessage("my.prefix");
+
+            List<String> messages = server.messagesReceived();
+
+            // there should be one message per
+            assertThat(messages.size(), comparesEqualTo(submitted));
+
+        } finally {
+            testClient.stop();
+        }
+    }
+
+    @Test
+    public void testMessageHashcode() throws Exception {
+
+        StatsDTestMessage previous = new StatsDTestMessage<Long>("my.count", Message.Type.COUNT, Long.valueOf(1), 0, new String[0]) {
+            @Override protected void writeValue(StringBuilder builder) {
+                builder.append(this.value);
+            };
+        };
+        StatsDTestMessage previousTagged =
+            new StatsDTestMessage<Long>("my.count", Message.Type.COUNT, Long.valueOf(1), 0, new String[] {"foo", "bar"}) {
+
+            @Override protected void writeValue(StringBuilder builder) {
+                builder.append(this.value);
+            };
+        };
+
+        StatsDTestMessage next = new StatsDTestMessage<Long>("my.count", Message.Type.COUNT, Long.valueOf(1), 0, new String[0]) {
+            @Override protected void writeValue(StringBuilder builder) {
+                builder.append(this.value);
+            };
+        };
+        StatsDTestMessage nextTagged =
+            new StatsDTestMessage<Long>("my.count", Message.Type.COUNT, Long.valueOf(1), 0, new String[] {"foo", "bar"}) {
+
+            @Override protected void writeValue(StringBuilder builder) {
+                builder.append(this.value);
+            };
+        };
+
+        assertEquals(previous.hashCode(), next.hashCode());
+        assertEquals(previousTagged.hashCode(), nextTagged.hashCode());
+    }
+
+    @Test(timeout = 5000L)
+    public void shutdown_test() throws Exception {
+        final int port = 17256;
+        final int qSize = 256;
+        final DummyStatsDServer server = new DummyStatsDServer(port);
+
+        final NonBlockingStatsDClientBuilder builder = new SlowStatsDNonBlockingStatsDClientBuilder().prefix("")
+            .hostname("localhost")
+            .port(port);
+        final SlowStatsDNonBlockingStatsDClient client = ((SlowStatsDNonBlockingStatsDClientBuilder)builder).build();
+
+        try {
+            client.count("mycounter", 5);
+            assertEquals(0, server.messagesReceived().size());
+            server.waitForMessage();
+            assertEquals(1, server.messagesReceived().size());
+        } finally {
+            client.stop();
+            server.close();
+            assertEquals(0, client.getLock().getCount());
+        }
+    }
+
+    private static class SlowStatsDNonBlockingStatsDClient extends NonBlockingStatsDClient {
+
+        private CountDownLatch lock;
+
+        SlowStatsDNonBlockingStatsDClient(final String prefix,  final int queueSize,
+                String[] constantTags, final StatsDClientErrorHandler errorHandler,
+                Callable<SocketAddress> addressLookup, final int timeout, final int bufferSize,
+                final int maxPacketSizeBytes, String entityID, final int poolSize, final int processorWorkers,
+                final int senderWorkers, boolean blocking) throws StatsDClientException {
+
+            super(new NonBlockingStatsDClientBuilder()
+                .prefix(prefix)
+                .queueSize(queueSize)
+                .constantTags(constantTags)
+                .errorHandler(errorHandler)
+                .addressLookup(addressLookup)
+                .timeout(timeout)
+                .entityID(entityID)
+                .bufferPoolSize(poolSize)
+                .blocking(blocking)
+                .senderWorkers(senderWorkers)
+                .processorWorkers(processorWorkers)
+                .maxPacketSizeBytes(maxPacketSizeBytes)
+                .resolve());
+
+            lock = new CountDownLatch(1);
+        }
+
+        public CountDownLatch getLock() {
+            return this.lock;
+        }
+
+        @Override
+        public void stop() {
+            super.stop();
+            lock.countDown();
+        }
+
+    };
+
+    private static class SlowStatsDNonBlockingStatsDClientBuilder extends NonBlockingStatsDClientBuilder {
+
+        @Override
+        public SlowStatsDNonBlockingStatsDClient build() throws StatsDClientException {
+            int packetSize = maxPacketSizeBytes;
+            if (packetSize == 0) {
+                packetSize = (port == 0) ? NonBlockingStatsDClient.DEFAULT_UDS_MAX_PACKET_SIZE_BYTES :
+                    NonBlockingStatsDClient.DEFAULT_UDP_MAX_PACKET_SIZE_BYTES;
+            }
+
+            if (addressLookup != null) {
+                return new SlowStatsDNonBlockingStatsDClient(prefix, queueSize, constantTags, errorHandler,
+                        addressLookup, timeout, socketBufferSize, packetSize, entityID, bufferPoolSize,
+                        processorWorkers, senderWorkers, blocking);
+            } else {
+                return new SlowStatsDNonBlockingStatsDClient(prefix, queueSize, constantTags, errorHandler,
+                        staticStatsDAddressResolution(hostname, port), timeout, socketBufferSize, packetSize,
+                        entityID, bufferPoolSize, processorWorkers, senderWorkers, blocking);
+            }
+        }
+    }
+
+    private static class NonsamplingClient extends NonBlockingStatsDClient {
+	NonsamplingClient(NonBlockingStatsDClientBuilder builder) {
+	    super(builder);
+	}
+	@Override
+	protected boolean isInvalidSample(double sampleRate) {
+	    return false;
+	}
+    }
+
+    private static class NonsamplingClientBuilder extends NonBlockingStatsDClientBuilder {
+	@Override
+	public NonsamplingClient build() throws StatsDClientException {
+	    return new NonsamplingClient(resolve());
+	}
+    }
+
+    @Test(timeout = 5000L)
+    public void nonsampling_client_test() throws Exception {
+        final int port = 17256;
+        final DummyStatsDServer server = new DummyStatsDServer(port);
+
+	final NonBlockingStatsDClientBuilder builder = new NonsamplingClientBuilder()
+	    .prefix("")
+            .hostname("localhost")
+	    .port(port);
+
+	final NonsamplingClient client = ((NonsamplingClientBuilder)builder).build();
+
+        try {
+            client.gauge("test.gauge", 42.0, 0.0);
+	    server.waitForMessage();
+	    List<String> messages = server.messagesReceived();
+            assertEquals(1, messages.size());
+            assertEquals(messages.get(0), "test.gauge:42|g|@0.000000");
+        } finally {
+            client.stop();
+            server.close();
+        }
+    }
+}

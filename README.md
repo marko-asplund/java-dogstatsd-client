@@ -35,9 +35,9 @@ By default, all exceptions are ignored, mimicking UDP behaviour. When using Unix
 Once your DogStatsD client is installed, instantiate it in your code:
 
 ```java
-import com.timgroup.statsd.NonBlockingStatsDClientBuilder;
-import com.timgroup.statsd.NonBlockingStatsDClient;
-import com.timgroup.statsd.StatsDClient;
+import com.datadog.dogstatsd.NonBlockingStatsDClientBuilder;
+import com.datadog.dogstatsd.NonBlockingStatsDClient;
+import com.datadog.dogstatsd.StatsDClient;
 
 public class DogStatsdClient {
 
@@ -57,9 +57,9 @@ public class DogStatsdClient {
 alternatively:
 
 ```java
-import com.timgroup.statsd.NonBlockingStatsDClientBuilder;
-import com.timgroup.statsd.NonBlockingStatsDClient;
-import com.timgroup.statsd.StatsDClient;
+import com.datadog.dogstatsd.NonBlockingStatsDClientBuilder;
+import com.datadog.dogstatsd.NonBlockingStatsDClient;
+import com.datadog.dogstatsd.StatsDClient;
 
 public class DogStatsdClient {
 
@@ -92,8 +92,8 @@ deprecated overloaded constructors.
 
 **DEPRECATED**
 ```java
-import com.timgroup.statsd.NonBlockingStatsDClient;
-import com.timgroup.statsd.StatsDClient;
+import com.datadog.dogstatsd.NonBlockingStatsDClient;
+import com.datadog.dogstatsd.StatsDClient;
 
 public class DogStatsdClient {
 
